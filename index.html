@@ -1,0 +1,484 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="initial-scale=1,maximum-scale=1,user-scalable=no">
+  <title>3D Routing</title>
+
+  <style>
+    html,
+    body{
+      padding: 0;
+      margin: 0;
+      height: 100%;
+    }
+
+    #viewDiv{
+      height: 100%;
+      width: 100%;
+    }
+    #mapDiv{
+      position: absolute;
+      top: 50px;
+      right: 12px;
+      width: 300px;
+      height: 200px;
+      border: 1px solid black;
+      z-index: 1;
+    }
+  </style>
+  <!-- Calcite Maps -->
+  <link rel="stylesheet" href="https://esri.github.io/calcite-maps/dist/css/calcite-maps-arcgis-4.x.min.css">
+
+  <!-- ArcGIS JS 4.0 -->
+  <link rel="stylesheet" href="https://js.arcgis.com/4.0/esri/css/main.css">
+
+  <!-- ArcGIS JS 4.0 -->
+  <script src="https://js.arcgis.com/4.0/"></script>
+
+  <script type="text/javascript">
+    var dojoConfig = {
+      packages: [{
+        name: "bootstrap",
+        location: "https://esri.github.io/calcite-maps/dist/vendor/dojo-bootstrap"
+      },
+      {
+        name: "calcite-maps",
+        location: "https://esri.github.io/calcite-maps/dist/js/dojo"
+      }]
+    };
+  </script>
+
+  <script>
+    require([
+      "esri/views/SceneView",
+      "esri/WebScene",
+      "esri/Map",
+      "esri/views/MapView",
+      "esri/Camera",
+     "esri/Graphic",
+     "esri/layers/GraphicsLayer",
+     "esri/layers/SceneLayer",
+     "esri/geometry/SpatialReference",
+     "esri/tasks/RouteTask",
+     "esri/tasks/support/RouteParameters",
+     "esri/tasks/support/FeatureSet",
+     "esri/symbols/SimpleMarkerSymbol",
+     "esri/symbols/SimpleLineSymbol",
+     "esri/Color",
+     "esri/core/urlUtils",
+     "esri/geometry/Point",
+     "esri/core/Scheduler",
+     "dojo/on",
+      "dojo/domReady!"
+    ], function(
+      SceneView, WebScene,  Map, MapView,
+      Camera, Graphic, GraphicsLayer, SceneLayer, SpatialReference,
+      RouteTask, RouteParameters,
+      FeatureSet, SimpleMarkerSymbol, SimpleLineSymbol, Color, urlUtils, Point, Scheduler, on
+    ) {
+
+      task = null;
+      elev = 20;//20
+      tilt = 90;//80
+      fov = 10;//150
+
+      // // proxy the route requests to avoid prompt for log in
+      // urlUtils.addProxyRule({
+      //   urlPrefix: "route.arcgis.com",
+      //   proxyUrl: "http://awang.esri.com/proxy/proxy.ashx"
+      // });
+
+      //Point the URL to a valid route service
+      var routeTask = new RouteTask({
+        url: "http://utility.arcgis.com/usrsvcs/appservices/Z5eo3xqpn2KrEuDB/rest/services/World/Route/NAServer/Route_World/"
+      });
+
+      //The stops and route result will be stored in this layer
+      var routeLyr = new GraphicsLayer();
+
+      //setup the route parameters
+      var routeParams = new RouteParameters({
+        returnRoutes: true,
+        returnStops: true,
+        returnDirections: true,
+        stops: new FeatureSet(),
+        outSpatialReference: {
+          wkid: 4326
+        }
+      });
+
+      //define the symbology used to display the stops
+      var stopSymbol = new SimpleMarkerSymbol({
+        style: "cross",
+        size: 15,
+        color: "blue",
+        outline: new SimpleLineSymbol({
+          width: 4,
+          color: "blue"
+        })
+      });
+
+      //define the symbology used to display the route
+      var routeSymbol = new SimpleLineSymbol({
+        color: [0, 0, 255, 0.5],
+        width: 5
+      });
+
+      GPSSymbol = new SimpleMarkerSymbol({
+        style: "circle",
+        color: "red",
+        outline: new SimpleLineSymbol({
+          width: 2,
+          color: "red"
+        })
+      });
+
+
+
+      // var scene = new WebScene({
+      //   portalItem: { // autocasts as new PortalItem()
+      //     id: "1cc9059cdb1f4cabbcc23a97ea23d4c9"
+      //   }
+      // });
+
+      var map = new Map({
+        basemap: "hybrid",
+        ground: "world-elevation"
+      })
+
+      view = new SceneView({
+        map: map,
+        container: "viewDiv",
+        padding: {
+          top: 70,
+          bottom: 0
+        },
+        camera:{
+          position:[-75.1652, 39.9526, 3500],
+          tilt: 0,
+          heading: 9
+        }
+      });
+
+      overView = new MapView({
+        container: "mapDiv",
+        map: map,
+        ui: {
+          components: ["compass"]
+        },
+        center: [-75.1652, 39.9526],
+        zoom: 14,
+        rotation: -9
+      });
+
+      var nycLayer = new SceneLayer({url: "https://tiles.arcgis.com/tiles/z2tnIkrLQ2BRzr6P/arcgis/rest/services/New_York_LoD2_3D_Buildings/SceneServer/layers/0"});
+      var phillyLayer = new SceneLayer({url: "http://scene.arcgis.com/arcgis/rest/services/Hosted/Buildings_Philadephia/SceneServer/layers/0/"});
+      map.add(nycLayer);
+      map.add(phillyLayer);
+      map.add(routeLyr);
+
+
+
+      on(view, "click", addStop);
+
+      function addStop(evt) {
+        if(routeParams.stops.features.length >= 2){
+          routeParams.stops.features = [];
+          routeLyr.graphics.removeAll();
+        }
+        console.log("ADDED!");
+        var p = new Point({
+          x: evt.mapPoint.x,
+          y: evt.mapPoint.y,
+          spatialReference: {
+            latestWkid: 3857,
+            wkid: 102100
+          }
+        });
+
+        //Add a point at the location of the map click
+        var stop = new Graphic({
+          geometry: p,
+          symbol: stopSymbol
+        });
+        routeLyr.add(stop);
+
+        //Execute the route task if 2 or more stops are input
+        routeParams.stops.features.push(stop);
+        if (routeParams.stops.features.length >= 2) {
+          routeTask.solve(routeParams).then(showRoute).then(traverseRoute);
+          //.then(traverseRoute);
+        }
+      }
+
+        //Adds the solved route to the map as a graphic
+      function showRoute(data) {
+        var routeResult = data.routeResults[0].route;
+        routeResult.symbol = routeSymbol;
+        routeLyr.add(routeResult);
+        return data;
+      }
+
+      function getHeading(point1, point2){
+        //0 is long
+        //1 is lat
+        var long1 = point1[0]*(Math.PI/180);
+        var lat1 = point1[1]*(Math.PI/180);
+        var long2 = point2[0]*(Math.PI/180);
+        var lat2 = point2[1]*(Math.PI/180);
+
+        var dLon = long2-long1;
+        var y = Math.sin(dLon)*Math.cos(lat2);
+        var x = Math.cos(lat1)*Math.sin(lat2) - Math.sin(lat1)*Math.cos(lat2)*Math.cos(dLon);
+        var bearing = Math.atan2(y, x);
+        var angle =((bearing/(Math.PI/180))+360)%360;
+        return angle;
+      }
+
+      function traverseRoute(data){
+        var routeResult = data.routeResults[0].route;
+        var points = routeResult.geometry.paths[0];
+
+        console.log(points.length);
+
+        //NEW METHOD
+        var cameras = [];
+        var GPSGraphics = [];
+        var lastAngle = 0;
+
+        for(var i =0; i<points.length; i++){
+          var angle = 0;
+          var currentPoint = points[i];
+          var lastPoint;
+          var largeAngleChange = false;
+          var largeDistanceChange = false;
+          var angleChange = 0;
+
+          if(i == 0){
+            angle = getHeading(currentPoint, points[i+1])
+            lastAngle = angle;
+          }else{
+            lastPoint = points[i-1];
+            angle = getHeading(lastPoint, currentPoint);
+
+            //Calc angle change
+            var angleChange = (angle - lastAngle)
+            if(Math.abs(angle-lastAngle)>180){
+              (angle-lastAngle)>0?  angleChange = (angle-lastAngle)-360 : angleChange = (angle-lastAngle)+360
+              console.log("angle change "+angleChange);
+            }
+
+            if(Math.abs(angleChange)>40){
+              largeAngleChange = true;
+            }
+            largeDistanceChange = true; //TEMPORARY
+          }
+
+          //GENERATE THE CAMERAS
+          if(largeDistanceChange && largeAngleChange){
+            //TURN FIRST THEN MOVE
+
+            //TURN CAMERAS
+            var angleScale = Math.abs(angleChange)/2;
+            var increA = angleChange/angleScale;
+            for(var k=1; k<=angleScale; k++){
+              changeA = lastAngle + increA*k;
+
+              var transitionCamera = new Camera({
+                tilt: tilt,
+                position: new Point({
+                  x: lastPoint[0],
+                  y: lastPoint[1],
+                  z: elev,
+                  spatialReference: {wkid: 4326},
+                  fov: fov
+                }),
+                heading: changeA
+              });
+
+
+              var p = new Point({
+                x: lastPoint[0],
+                y: lastPoint[1],
+                spatialReference: {
+                  wkid: 4326
+                }
+              });
+
+              var transitionGraphic = new Graphic({
+                geometry: p,
+                symbol: GPSSymbol
+              });
+
+              GPSGraphics.push(transitionGraphic);
+              cameras.push(transitionCamera);
+            }
+
+            //MOVE CAMERAS
+            var minX = Math.round(Math.abs((currentPoint[0] - lastPoint[0])/0.00001));
+            var minY = Math.round(Math.abs((currentPoint[1] - lastPoint[1])/0.00001));
+            var distScale = 0;
+            minX>minY ? distScale = minX : distScale = minY;
+            var increX = (currentPoint[0] - lastPoint[0])/distScale;
+            var increY = (currentPoint[1] - lastPoint[1])/distScale;
+
+            for(var j=1; j<=distScale; j++){
+              var changeX = lastPoint[0] + increX*j;
+              var changeY = lastPoint[1] + increY*j;
+
+              var transitionCamera = new Camera({
+                tilt: tilt,
+                position: new Point({
+                  x: changeX,
+                  y: changeY,
+                  z: elev,
+                  spatialReference: {wkid: 4326},
+                  fov: fov
+                }),
+                heading: angle
+              });
+
+              var p = new Point({
+                x: changeX,
+                y: changeY,
+                spatialReference: {
+                  wkid: 4326
+                }
+              });
+
+              var transitionGraphic = new Graphic({
+                geometry: p,
+                symbol: GPSSymbol
+              });
+
+              GPSGraphics.push(transitionGraphic);
+              cameras.push(transitionCamera);
+            }
+          }else if(largeDistanceChange){
+            //MOVE CAMERAS AND ANGLE
+            var minX = Math.round(Math.abs((currentPoint[0] - lastPoint[0])/0.00001));
+            var minY = Math.round(Math.abs((currentPoint[1] - lastPoint[1])/0.00001));
+            var distScale = 0;
+            minX>minY ? distScale = minX : distScale = minY;
+            var increX = (currentPoint[0] - lastPoint[0])/distScale;
+            var increY = (currentPoint[1] - lastPoint[1])/distScale;
+            var increA = angleChange/distScale;
+            console.log(increA)
+
+            for(var j=1; j<=distScale; j++){
+              var changeX = lastPoint[0] + increX*j;
+              var changeY = lastPoint[1] + increY*j;
+              var changeA = lastAngle + increA*j;
+
+              var transitionCamera = new Camera({
+                tilt: tilt,
+                position: new Point({
+                  x: changeX,
+                  y: changeY,
+                  z: elev,
+                  spatialReference: {wkid: 4326},
+                  fov: fov
+                }),
+                heading: changeA
+              });
+
+              var p = new Point({
+                x: changeX,
+                y: changeY,
+                spatialReference: {
+                  wkid: 4326
+                }
+              });
+
+              var transitionGraphic = new Graphic({
+                geometry: p,
+                symbol: GPSSymbol
+              });
+
+              GPSGraphics.push(transitionGraphic);
+              cameras.push(transitionCamera);
+            }
+          }
+
+          //DISTANCE CHANGE WILL ALWAYS BE LARGE FROM NOW ON
+          // else if(largeAngleChange){
+          //   var transitionAngle = (lastAngle+angle)/2;
+          //   console.log("changeAngle"+ transitionAngle);
+          //   // lastAngle = angle;
+          //   var transitionCamera = new Camera({
+          //     tilt: 80,
+          //     position: new Point({
+          //       x: currentPoint[0],
+          //       y: currentPoint[1],
+          //       z: 20,
+          //       spatialReference: {wkid: 4326},
+          //       fov: 150
+          //     }),
+          //     heading: transitionAngle
+          //   });
+          //
+          //   cameras.push(transitionCamera);
+          // }
+          lastAngle = angle;
+        }
+
+        console.log(GPSGraphics);
+
+
+        // // //REDUCE METHOD
+        // firstCam = cameras.unshift();
+        //
+        // cameras.reduce(function(currentCam, nextCam){
+        //     // return currentCam.then(view.goTo.bind(view, nextCam, {aniamte: true})).then(setTimeout(function(){
+        //     //   console.log("hi")
+        //     // }, 1000));
+        //   return currentCam.then(view.goTo.bind(view, nextCam));
+        // }, view.goTo(firstCam));
+
+        //SCHEDULER METHOD
+        var timeval=0;
+        task = Scheduler.addFrameTask({
+          update: function(){
+
+            overView.graphics.removeAll();
+            overView.graphics.add(GPSGraphics[timeval])
+            // console.log(overView.graphics.length);
+            overView.center = GPSGraphics[timeval].geometry;
+            view.camera = cameras[timeval++];
+
+
+
+
+
+
+            if(timeval == cameras.length){
+              task.remove();
+              task = null;
+            }
+          }
+        })
+      }
+
+    });
+  </script>
+</head>
+
+<body class="calcite-maps map-position-absolute nav-position-top calcite-theme-dark calcite-widgets-dark layout-mobile-focus">
+
+  <nav class="navbar navbar-fixed-top calcite-text-light">
+    <div class="container-fluid">
+      <div class="navbar-header">
+        <div class="navbar-title">
+          <div class="navbar-main-title text-overflow">Traverse: Click on any two points to route between them</div>
+        </div>
+      </div>
+    </div>
+  </nav>
+
+    <div id="viewDiv"></div>
+    <div id="mapDiv"></div>
+
+</body>
+
+</html>
